@@ -6,6 +6,7 @@ using DocumentFormat.OpenXml.Spreadsheet;
 using DocumentFormat.OpenXml;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Collections.Generic;
 
 namespace OpenXmlAbstractions
 {
@@ -13,7 +14,12 @@ namespace OpenXmlAbstractions
     {
         // Populates a given start cell in a spreadsheet with a datatable
         public static void PopulateSpreadSheetWithDataTableTemplate(
-            string docFilePath, string tempFilePath, string sheetName, string startCell, DataTable dt)
+            string docFilePath, 
+            string tempFilePath, 
+            string sheetName, 
+            string startCell, 
+            DataTable dt, 
+            Dictionary<int, ColumnOptions> columnOptions)
         {
             if (!File.Exists(docFilePath))
             {
@@ -33,27 +39,41 @@ namespace OpenXmlAbstractions
                 using (var spreadSheet = SpreadsheetDocument.Open(tempFilePath, true))
                 {
                     // Disable recalcuation before generating the document
-                    spreadSheet.WorkbookPart.Workbook.CalculationProperties.FullCalculationOnLoad = false;
+                    //spreadSheet.WorkbookPart.Workbook.CalculationProperties.FullCalculationOnLoad = false;
 
                     var startColLetter = StripNumbersFromString(startCell);
                     var startColNumber = ConvertColumnLetterToNumber(startColLetter);
-
                     var startRowNumber = Convert.ToUInt32(StripLettersFromString(startCell));
-
                     var col = startColNumber;
+
+                    var worksheetPart = GetWorksheetPart(sheetName, spreadSheet);
+
                     for (int x = 0; x < dt.Rows.Count; x++)
                     {
                         for (int z = 0; z < dt.Columns.Count; z++)
                         {
-                            InsertTextToCell(spreadSheet, sheetName, dt.Rows[x][z].ToString(), col, startRowNumber);
+                            ColumnOptions options = null;
+                            columnOptions?.TryGetValue(col, out options);
+
+                            InsertTextToCell(
+                                spreadSheet, 
+                                worksheetPart, 
+                                dt.Rows[x][z].ToString(), 
+                                col, 
+                                startRowNumber,
+                                options);
+
                             col++;
                         }
                         col = startColNumber;
                         startRowNumber++;
                     }
 
+                    // Save the new worksheet.
+                    worksheetPart.Worksheet.Save();
+
                     // Enable recalcuation again
-                    spreadSheet.WorkbookPart.Workbook.CalculationProperties.FullCalculationOnLoad = true;
+                    //spreadSheet.WorkbookPart.Workbook.CalculationProperties.FullCalculationOnLoad = true;
                 }
             }
             catch (Exception)
@@ -63,64 +83,111 @@ namespace OpenXmlAbstractions
             }
         }
 
-        private static void InsertTextToCell(
-            SpreadsheetDocument spreadSheet, string sheetName, string text, int column, uint row)
+        private static WorksheetPart GetWorksheetPart(string sheetName, SpreadsheetDocument spreadSheet)
         {
-            // If there is no text in the cell, return
-            if (string.IsNullOrEmpty(text)) return;
-
             // Load the specified sheet
-            var sheets = spreadSheet.WorkbookPart.Workbook
+            var sheet = spreadSheet.WorkbookPart.Workbook
                 .GetFirstChild<Sheets>()
                 .Elements<Sheet>()
-                .Where(s => s.Name == sheetName);
+                .Where(s => s.Name == sheetName)
+                .FirstOrDefault();
 
-            if (sheets.Count() == 0)
+            if (sheet == null)
             {
                 throw new Exception("noSheet");
             }
 
-            var relationshipId = sheets.First().Id.Value;
+            return (WorksheetPart)spreadSheet.WorkbookPart.GetPartById(sheet.Id.Value);
+        }
+
+        private static void InsertTextToCell(
+            SpreadsheetDocument spreadSheet, 
+            WorksheetPart worksheetPart, 
+            string text, 
+            int column, 
+            uint row, 
+            ColumnOptions options)
+        {
+            // If there is no text in the cell, return
+            if (string.IsNullOrEmpty(text)) return;
+
+            if (options == null)
+            {
+                options = new ColumnOptions();
+            }
 
             // Converts the column number to the cooresponding excel column letter
             var actualColumn = ConvertColumnNumberToLetter(column);
 
-            var worksheetPart = (WorksheetPart)spreadSheet.WorkbookPart.GetPartById(relationshipId);
-
-            // Get the SharedStringTablePart. If it does not exist, create a new one.
-            SharedStringTablePart shareStringPart;
-            if (spreadSheet.WorkbookPart.GetPartsOfType<SharedStringTablePart>().Count() > 0)
-            {
-                shareStringPart = spreadSheet.WorkbookPart.GetPartsOfType<SharedStringTablePart>().First();
-            }
-            else
-            {
-                shareStringPart = spreadSheet.WorkbookPart.AddNewPart<SharedStringTablePart>();
-            }
-
-            // Insert the text into the SharedStringTablePart.
-            var index = InsertSharedStringItem(text, shareStringPart);
-
-            // Insert cell A1 into the new worksheet.
             var cell = InsertCellInWorksheet(actualColumn, row, worksheetPart);
 
-            if (column == 1 || column == 2 || column == 3 || column == 4 || column == 8 || column == 10)
+            var format = new CellFormat();
+            format.Alignment = new Alignment();
+            format.Alignment.WrapText = options.WrapText;
+            format.Alignment.TextRotation = options.TextRotation;
+
+            var font = new Font
             {
-                cell.StyleIndex = InsertCellFormat(spreadSheet.WorkbookPart,
-                    new CellFormat() { Alignment = new Alignment() { TextRotation = 90U } });
+                Color = new Color { Rgb = new HexBinaryValue(options.TextColor) }
+            };
+
+            format.FontId = InsertFont(spreadSheet.WorkbookPart, font);
+
+            if (options.TextColorChanges != null)
+            {
+                foreach (var changes in options.TextColorChanges)
+                {
+                    if (text.Contains(changes.Key))
+                    {
+                        var overrideFont = new Font
+                        {
+                            Color = new Color { Rgb = new HexBinaryValue(changes.Value) }
+                        };
+
+                        format.FontId = InsertFont(spreadSheet.WorkbookPart, overrideFont);
+                    }
+                }
+            }
+
+            cell.StyleIndex = InsertCellFormat(spreadSheet.WorkbookPart, format);
+
+            if (options.TextReplacements != null)
+            {
+                foreach (var replacement in options.TextReplacements)
+                {
+                    text = text.Replace(replacement, string.Empty);
+                }
+            }
+
+            int numResult;
+            if (!int.TryParse(text, out numResult))
+            {
+                //// Get the SharedStringTablePart. If it does not exist, create a new one.
+                //SharedStringTablePart shareStringPart;
+                //if (spreadSheet.WorkbookPart.GetPartsOfType<SharedStringTablePart>().Count() > 0)
+                //{
+                //    shareStringPart = spreadSheet.WorkbookPart.GetPartsOfType<SharedStringTablePart>().First();
+                //}
+                //else
+                //{
+                //    shareStringPart = spreadSheet.WorkbookPart.AddNewPart<SharedStringTablePart>();
+                //}
+
+                //// Insert the text into the SharedStringTablePart.
+                //var index = InsertSharedStringItem(text, shareStringPart);
+
+                //// Set the value of cell A1.
+                //cell.CellValue = new CellValue(index.ToString());
+                //cell.DataType = new EnumValue<CellValues>(CellValues.SharedString);
+
+                cell.CellValue = new CellValue(text);
+                cell.DataType = new EnumValue<CellValues>(CellValues.String);
             }
             else
             {
-                cell.StyleIndex = InsertCellFormat(spreadSheet.WorkbookPart,
-                    new CellFormat() { Alignment = new Alignment() { WrapText = true } });
+                cell.CellValue = new CellValue(text);
+                cell.DataType = new EnumValue<CellValues>(CellValues.Number);
             }
-
-            // Set the value of cell A1.
-            cell.CellValue = new CellValue(index.ToString());
-            cell.DataType = new EnumValue<CellValues>(CellValues.SharedString);
-
-            // Save the new worksheet.
-            worksheetPart.Worksheet.Save();
         }
 
         private static string StripNumbersFromString(string input)
@@ -171,7 +238,7 @@ namespace OpenXmlAbstractions
             int i = 0;
 
             // Iterate through all the items in the SharedStringTable. If the text already exists, return its index.
-            foreach (SharedStringItem item in shareStringPart.SharedStringTable.Elements<SharedStringItem>())
+            foreach (var item in shareStringPart.SharedStringTable.Elements<SharedStringItem>())
             {
                 if (item.InnerText == text) return i;
 
@@ -179,7 +246,7 @@ namespace OpenXmlAbstractions
             }
 
             // The text does not exist in the part. Create the SharedStringItem and return its index.
-            shareStringPart.SharedStringTable.AppendChild(new SharedStringItem(new DocumentFormat.OpenXml.Spreadsheet.Text(text)));
+            shareStringPart.SharedStringTable.AppendChild(new SharedStringItem(new Text(text)));
             shareStringPart.SharedStringTable.Save();
 
             return i;
@@ -193,46 +260,42 @@ namespace OpenXmlAbstractions
             var cellReference = columnName + rowIndex;
 
             // If the worksheet does not contain a row with the specified row index, insert one.
-            Row row;
-            if (sheetData.Elements<Row>().Where(r => r.RowIndex == rowIndex).Count() != 0)
-            {
-                row = sheetData.Elements<Row>().Where(r => r.RowIndex == rowIndex).First();
-                row.Height = 120;
-                row.CustomHeight = true;
-            }
-            else
-            {
+            var row = sheetData.Elements<Row>()
+                .Where(r => r.RowIndex == rowIndex)
+                .FirstOrDefault();
+
+            if (row == null)
+            { 
                 row = new Row() { RowIndex = rowIndex };
-                row.Height = 120;
-                row.CustomHeight = true;
                 sheetData.Append(row);
             }
 
+            var existingCell = row.Elements<Cell>()
+                .Where(c => c.CellReference.Value == cellReference)
+                .FirstOrDefault();
+
             // If there is not a cell with the specified column name, insert one.  
-            if (row.Elements<Cell>().Where(c => c.CellReference.Value == columnName + rowIndex).Count() > 0)
+            if (existingCell != null)
             {
-                return row.Elements<Cell>().Where(c => c.CellReference.Value == cellReference).First();
+                return existingCell;
             }
-            else
-            {
-                // Cells must be in sequential order according to CellReference. Determine where to insert the new cell.
-                Cell refCell = null;
 
-                foreach (Cell cell in row.Elements<Cell>())
+            // Cells must be in sequential order according to CellReference. Determine where to insert the new cell.
+            Cell refCell = null;
+
+            foreach (var cell in row.Elements<Cell>())
+            {
+                if (ColumnComparison(cell.CellReference.ToString(), cellReference))
                 {
-                    if (ColumnComparison(cell.CellReference.ToString(), cellReference))
-                    {
-                        refCell = cell;
-                        break;
-                    }
+                    refCell = cell;
+                    break;
                 }
-
-                var newCell = new Cell() { CellReference = cellReference };
-                row.InsertBefore(newCell, refCell);
-
-                worksheetPart.Worksheet.Save();
-                return newCell;
             }
+
+            var newCell = new Cell() { CellReference = cellReference };
+            row.InsertBefore(newCell, refCell);
+
+            return newCell;
         }
 
         private static uint InsertCellFormat(WorkbookPart workbookPart, CellFormat cellFormat)
@@ -246,6 +309,17 @@ namespace OpenXmlAbstractions
             return cellFormats.Count++;
         }
 
+        private static uint InsertFont(WorkbookPart workbookPart, Font font)
+        {
+            var fonts = workbookPart.WorkbookStylesPart.Stylesheet.Elements<Fonts>().FirstOrDefault();
+            if (fonts == null)
+            {
+                fonts = new Fonts();
+            }
+            fonts.Append(font);
+            return fonts.Count++;
+        }
+
         /// <summary>
         /// Takes two cell reference identfiers (such as "A1" and "B1") and returns true if 
         /// second param should go before first param.
@@ -257,10 +331,10 @@ namespace OpenXmlAbstractions
         {
             // first get the substring that is the column part
             int iA = 0;
-            while ((int)cellRefA[iA] >= 65) // while it isn't a number
+            while (cellRefA[iA] >= 65) // while it isn't a number
                 iA++;
             int iB = 0;
-            while ((int)cellRefB[iB] >= 65)
+            while (cellRefB[iB] >= 65)
                 iB++;
 
             string colA = cellRefA.Substring(0, iA);

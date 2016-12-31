@@ -8,8 +8,8 @@
     <ProjectGuid>{62F1DED6-2DAD-4029-AFAD-9F7001DEB05C}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>SDSOpenXML</RootNamespace>
-    <AssemblyName>SDSOpenXML</AssemblyName>
+    <RootNamespace>OpenXmlAbstractions</RootNamespace>
+    <AssemblyName>OpenXmlAbstractions</AssemblyName>
     <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <TargetFrameworkProfile />
@@ -57,6 +57,7 @@
     <Reference Include="WindowsBase" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ColumnOptions.cs" />
     <Compile Include="ExcelGenerationLibrary.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
