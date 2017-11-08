@@ -7,6 +7,7 @@ using DocumentFormat.OpenXml;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
+using System.Xml;
 
 namespace OpenXmlAbstractions
 {
@@ -21,18 +22,7 @@ namespace OpenXmlAbstractions
             DataTable dt, 
             Dictionary<int, ColumnOptions> columnOptions)
         {
-            if (!File.Exists(docFilePath))
-            {
-                throw new Exception("noFile");
-            }
-
-            // Deletes the temporary file if it exists
-            if (File.Exists(tempFilePath))
-            {
-                File.Delete(tempFilePath);
-            }
-            // Copies the Template document to a specified temporary directory
-            File.Copy(docFilePath, tempFilePath);
+            CreateTempFile(docFilePath, tempFilePath);
 
             try
             {
@@ -83,6 +73,96 @@ namespace OpenXmlAbstractions
             }
         }
 
+        // Populates a given start cell in a spreadsheet with a datatable
+        public static void PopulateSpreadSheetWithXMLTemplate(string docFilePath, string tempFilePath, string sheetName, string startCell, string xml)
+        {
+            CreateTempFile(docFilePath, tempFilePath);
+
+            try
+            {
+                using (var spreadSheet = SpreadsheetDocument.Open(tempFilePath, true))
+                {
+                    // Disable recalcuation before generating the document
+                    //spreadSheet.WorkbookPart.Workbook.CalculationProperties.FullCalculationOnLoad = false;
+
+                    var startColLetter = StripNumbersFromString(startCell);
+                    var startColNumber = ConvertColumnLetterToNumber(startColLetter);
+                    var startRowNumber = Convert.ToUInt32(StripLettersFromString(startCell));
+                    var col = startColNumber;
+
+                    var worksheetPart = GetWorksheetPart(sheetName, spreadSheet);
+
+                    using (var reader = XmlReader.Create(new StringReader(xml.Replace("&", "&amp;"))))
+                    {
+                        while (reader.Read())
+                        {
+                            if (reader.IsStartElement())
+                            {
+                                switch (reader.Name)
+                                {
+                                    case "columns":
+                                        reader.Read();
+                                        while (reader.Name == "column")
+                                        {
+                                            InsertTextToCell(
+                                                spreadSheet,
+                                                worksheetPart,
+                                                reader.ReadElementString(),
+                                                col,
+                                                startRowNumber);
+                                            col++;
+                                        }
+                                        break;
+                                    case "row":
+                                        reader.Read();
+                                        // Reset the to the starting column number
+                                        col = startColNumber;
+                                        startRowNumber++;
+                                        while (reader.Name == "cell")
+                                        {
+                                            reader.ReadStartElement();
+                                            InsertTextToCell(
+                                                spreadSheet,
+                                                worksheetPart,
+                                                reader.ReadContentAsString(),
+                                                col,
+                                                startRowNumber);
+                                            reader.ReadEndElement();
+                                            col++;
+                                        }
+                                        break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Enable recalcuation again
+                    //spreadSheet.WorkbookPart.Workbook.CalculationProperties.FullCalculationOnLoad = true;
+                }
+            }
+            catch (Exception)
+            {
+                File.Delete(tempFilePath);
+                throw;
+            }
+        }
+
+        private static void CreateTempFile(string docFilePath, string tempFilePath)
+        {
+            if (!File.Exists(docFilePath))
+            {
+                throw new Exception("noFile");
+            }
+
+            // Deletes the temporary file if it exists
+            if (File.Exists(tempFilePath))
+            {
+                File.Delete(tempFilePath);
+            }
+            // Copies the Template document to a specified temporary directory
+            File.Copy(docFilePath, tempFilePath);
+        }
+
         private static WorksheetPart GetWorksheetPart(string sheetName, SpreadsheetDocument spreadSheet)
         {
             // Load the specified sheet
@@ -106,7 +186,7 @@ namespace OpenXmlAbstractions
             string text, 
             int column, 
             uint row, 
-            ColumnOptions options)
+            ColumnOptions options = null)
         {
             // If there is no text in the cell, return
             if (string.IsNullOrEmpty(text)) return;
